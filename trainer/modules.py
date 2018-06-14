@@ -292,6 +292,162 @@ def pointer_boundary_loss_and_prediction(y1, y2, logit_y1, logit_y2):
     return loss, (yp1, yp2)
 
 
+class ResidualBlock(object):
+
+    def __init__(self, scope="residual_block"):
+        self.components = []
+        self.scope = scope
+
+    def append(self, component):
+        self.components.append(component)
+
+    def __call__(self, x):
+
+        outputs = [x]
+        with tf.variable_scope(self.scope):
+            for component in self.components:
+                output = component(outputs[-1])
+                outputs.append(output)
+            return x + outputs[-1]
+
+
+class LayerNorm(object):
+
+    def __init__(self, scope="layer_norm"):
+        self.scope = scope
+
+    def __call__(self, x):
+
+        with tf.variable_scope(self.scope):
+            mean, var = tf.nn.moments(x, [1])
+            stddev = tf.sqrt(var)
+            dim = tf.shape(x)[1]
+            g = tf.get_variable("g", shape=[dim], 
+                initializer=tf.constant(stddev, dtype=tf.float32))
+            b = tf.get_variable("b", shape=[dim],
+                initializer=tf.constant(mean, dtype=tf.float32))
+
+            normailized_x = g * (x - mean) / stddev + b
+            return normailized_x
+
+def layer_normalize(x):
+    layer_norm_op = LayerNorm()
+    return layer_norm_op(x)
+
+
+def pos_encoding_conv(x, kernel_size, max_seqlen, out_dim, scope="pos_encode_conv"):
+    with tf.variable_scope(scope):
+        filter_size = [max_seqlen, kernel_size, 1, out_dim]
+        W = tf.get_variable("W", shape=filter_size, 
+            initializer=tf.truncated_normal_initializer(stddev=0.1))
+        b = tf.get_variable("bias", shape=[out_dim],
+            initializer=tf.constant(0., dtype=tf.float32))
+        strides = [1, 1, 1, 1]
+        padding = "VALID"
+        conv = tf.nn.conv2d(x, W, strides, padding)
+        res = tf.nn.relu(tf.nn.bias_add(conv, b))
+        return res
+
+
+class TextSeparableConv(object):
+
+    def __init__(self, kernel_size, embed_size, num_filters, out_dim, scope="text_separable_conv"):
+        self.scope = scope
+        self.depthwise_filter = [kernel_size, embed_size, 1, num_filters]
+        self.pointwise_filter = [1, 1, num_filters, out_dim]
+        self.strides = [1, 1, 1, 1]
+        self.padding = "SAME"
+
+    def __call__(self, x, layer_norm=False)
+        with tf.variable_scope(self.scope):
+            res = x
+            with tf.variable_scope("conv_layer_%s" % (i)):
+                W1 = tf.get_variable("depthwise_W", shape=self.depthwise_filter, 
+                    initializer=tf.truncated_normal_initializer(stddev=0.1))
+                W2 = tf.get_variable("pointwise_W", shape=self.pointwise_filter, 
+                    initializer=tf.truncated_normal_initializer(stddev=0.1))
+                b = tf.get_variable("bias", shape=[self.pointwise_filter[-1]],
+                    initializer=tf.constant(0., dtype=tf.float32))
+
+                conv = tf.nn.separable_conv2d(res, W1, W2, self.strides, self.padding)
+                conv = tf.nn.bias_add(conv, b)
+                if layer_norm: conv = layer_normalize(conv)
+                res = tf.nn.relu(conv)
+            return res
+
+
+class MultiheadSelfAttention(object):
+
+    def __init__(self, num_heads, out_dim, dim=None, scope="multi_head_self_attention"):
+        self.scope = scope
+        self.num_heads = num_heads
+        self.dim = dim
+        self.out_dim = out_dim
+
+    def __call__(self, x, mask, layer_norm=False):
+        dim = self.dim if self.dim else tf.shape[x][-1] / self.num_heads
+        with tf.variable_scope(self.scope):
+            outputs = []
+            for i in xrange(self.num_heads):
+                attention = Attention(dim, scope='self_attention %s' % (i))
+                output, _ = attention(query=x, mask=mask, memory=x)
+                outputs.append(output)
+            outputs = tf.concat(outputs, axis=2)
+            res = rnn_dense(outputs, self.out_dim)
+            if layer_norm: res = layer_normalize(res)
+            return res
+
+class FeedforwardNet(object):
+
+    def __init__(self, out_dim, scope="feed_forward"):
+        self.scope = scope
+        self.out_dim = out_dim
+
+    def __call__(self, x, layer_norm=False):
+        with tf.variable_scope(self.scope):
+            dim = tf.shape(x)[1]
+            W = tf.get_variable("W", shape=[dim, self.out_dim], 
+                initializer=tf.truncated_normal_initializer(stddev=0.1))
+            b = tf.get_variable("bias", shape=[self.out_dim],
+                initializer=tf.constant(0., dtype=tf.float32))
+            res = tf.nn.xw_plus_b(x, W, b)
+            if layer_norm: res = layer_normalize(res)
+            return res
+
+
+
+class EncoderBlock(object):
+
+    def __init__(self, 
+                num_conv_layers, 
+                kernel_size, 
+                embed_size, 
+                num_conv_filters,
+                conv_out_channels, 
+                num_attention_heads, 
+                attention_out_dim, 
+                feedforward_out_dim,
+                scope="encoder_block"):
+
+        self.C, self.K, self.E, self.F, self.CD, self.H, self.AD, self.FD = num_conv_layers, kernel_size, embed_size, num_conv_filters, \
+            conv_out_channels, attention_heads, attention_out_dim, feedforward_out_dim
+        self.scope = scope
+
+
+    def __call__(self, x, mask, max_seqlen):
+        with tf.variable_scope(self.scope):
+            x = pos_encoding_conv(x, kernel_size=self.E-self.CD+1, max_seqlen=max_seqlen, out_dim=self.CD)
+
+            for i in xrange(self.C):
+                conv = TextSeparableConv(kernel_size=self.K, embed_size=self.CD, num_filters=self.F, out_dim=self.CD, scope="text_separable_conv_%s" % (i))
+                x += conv(x, layer_norm=True)
+
+            atten = MultiheadSelfAttention(num_heads=self.H, out_dim=self.AD)
+            x += atten(x, mask, layer_norm=True)
+
+            ffn = FeedforwardNet(out_dim=self.FD)
+            x += ffn(x, layer_norm=True)
+            return x
 
 
 
