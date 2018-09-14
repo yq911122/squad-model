@@ -6,6 +6,7 @@ import ujson as json
 from collections import Counter
 import numpy as np
 import os.path
+import io
 
 nlp = spacy.blank("en")
 
@@ -87,7 +88,7 @@ def get_embedding(counter, data_type, limit=-1, emb_file=None, size=None, vec_si
     if emb_file is not None:
         assert size is not None
         assert vec_size is not None
-        with open(emb_file, "r", encoding="utf-8") as fh:
+        with io.open(emb_file, "r", encoding="utf-8") as fh:
             for line in tqdm(fh, total=size):
                 array = line.split()
                 word = "".join(array[0:-vec_size])
