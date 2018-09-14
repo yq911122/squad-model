@@ -62,7 +62,7 @@ def get_batch_dataset(record_file, parser, config):
         dataset = dataset.apply(tf.contrib.data.group_by_window(
             key_func, reduce_func, window_size=5 * config.batch_size)).shuffle(len(buckets) * 25)
     else:
-        dataset = dataset.batch(config.batch_size)
+        dataset = dataset.repeat().batch(config.batch_size)
     return dataset
 
 
@@ -71,7 +71,6 @@ def get_dataset(record_file, parser, config):
     dataset = tf.data.TFRecordDataset(record_file).map(
         parser, num_parallel_calls=num_threads).repeat().batch(config.batch_size)
     return dataset
-
 
 def convert_tokens(eval_file, qa_id, pp1, pp2):
     answer_dict = {}
