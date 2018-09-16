@@ -1,3 +1,6 @@
+import tensorflow as tf
+# from util import get_record_parser, get_batch_dataset
+
 class IteratorManager(object):
 
     def __init__(self, dataset):
@@ -25,33 +28,6 @@ class IteratorManager(object):
         }
 
 
-class DataManager(object):
-
-    def __init__(self, config):
-        parser = get_record_parser(config)
-        self.train_dataset = get_batch_dataset(config.train_record_file, parser, config)
-        self.dev_dataset = get_batch_dataset(config.dev_record_file, parser, config)
-        self.handle = tf.placeholder(tf.string, shape=[])
-        self.iterator = tf.data.Iterator.from_string_handle(
-            self.handle, self.train_dataset.output_types, self.train_dataset.output_shapes)
-        # self.meta = load_from_gs(config.)
-        self.batch_size = config.batch_size
-
-        self.iterator_managers = {
-            "train": IteratorManager(self.train_dataset),
-            "dev": IteratorManager(self.dev_dataset)
-            }
-
-    def setup_train_or_dev_string_handles(self, sess, ite_type):
-        self.iterator_managers[ite_type].get_string_handle(sess)
-
-    def make_feed_dict(self, data_type):
-        return {
-            self.handle: self.iterator_managers[data_type].string_handle
-        }
-
-    def step(self, sess, data_type):
-        self.iterator_managers[data_type].may_update_string_handle(self.batch_size, sess)
 
 class LearningRateUpdater(object):
 
@@ -61,16 +37,18 @@ class LearningRateUpdater(object):
         self.curr_patience = 0.
         self.loss_save = loss_save
 
-    def update(self, loss):
+    def update(self, loss, global_step):
         if loss < self.loss_save:
             self.loss_save = loss
             self.curr_patience = 0
         else:
             self.curr_patience += 1
         if self.curr_patience >= self.patience:
-            self.lr /= 2.0
+            prev_lr = self.lr
+            self.lr /= 1.5
             self.loss_save = loss
             self.curr_patience = 0
+            print "step: %s-update learning rate from %s to %s" % (global_step, prev_lr, self.lr)
         return self.lr
 
     def assign(self, sess, model):
@@ -78,22 +56,6 @@ class LearningRateUpdater(object):
 
     def setZero(self, sess, model):
         sess.run(model.lr.assign(0.))
-
-class SampleRateUpdater(object):
-
-    def __init__(self, init_sr, num_steps, coef=2.):
-        self.sr = init_sr
-        self.update_steps = num_steps / 50
-        self.coef = coef
-
-    def update(self, global_step):
-        if global_step % self.update_steps == 0:
-            self.sr /= self.coef
-            return True
-
-    def assign(self, sess, model, val=None):
-        if val is None: val = self.sr
-        sess.run(tf.assign(model.sample_rate, tf.constant(val, dtype=tf.float32)))
 
 class SummaryWriter(object):
 

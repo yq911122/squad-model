@@ -2,6 +2,7 @@ import tensorflow as tf
 import numpy as np
 import os
 
+from match_lstm import MatchLSTM
 from baseline import BaseLineModel
 from util import get_record_parser, evaluate, get_batch_dataset, load_from_gs, write_to_gs, convert_tokens
 import util
@@ -66,6 +67,7 @@ def train(config):
         global_step = train_sess.run(train_model.global_step) + 1
 
         loss, train_op, grad_summ, weight_summ = train_sess.run([train_model.loss, train_model.train_op, train_model.grad_summ, train_model.weight_summ], feed_dict=train_iterator_manager.make_feed_dict())
+        # tf.logging.info("training step: step {} adding loss: {}".format(global_step, loss))
 
         if global_step % config.period == 0:
             tf.logging.info("training step: step {} adding loss: {}".format(global_step, loss))
@@ -73,13 +75,21 @@ def train(config):
             summary_writer.write_summaries([loss_sum], global_step)
             summary_writer.write_summaries([grad_summ], global_step)
             summary_writer.write_summaries([weight_summ], global_step)
-        
+            
+            lr_summ = tf.Summary(value=[tf.Summary.Value(tag="model/lr", simple_value=lr_updater.lr), ])
+            summary_writer.write_summaries([lr_summ], global_step)
+
+            # summary_writer.flush()
+                        
+            # lr_updater.update(loss)
+            # lr_updater.assign(train_sess, train_model)
+
         if global_step % config.checkpoint == 0:
             lr_updater.setZero(train_sess, train_model)
             tf.logging.info("training step: step {} checking the model".format(global_step))
             checkpoint_path = train_model.saver.save(train_sess, checkpoints_path, global_step=global_step)
 
-            metrics, summ = evaluate_batch(train_model, config.val_num_batches, train_eval, train_sess, "train", train_iterator_manager)
+            _, summ = evaluate_batch(train_model, config.val_num_batches, train_eval, train_sess, "train", train_iterator_manager)
             summary_writer.write_summaries(summ, global_step)
             
             dev_model.saver.restore(dev_sess, checkpoint_path)
@@ -88,9 +98,8 @@ def train(config):
             
             summary_writer.flush()
                         
-            lr_updater.update(metrics["loss"])
+            lr_updater.update(metrics["loss"], global_step)
             lr_updater.assign(train_sess, train_model)
-
 
 def evaluate_batch(model, num_batches, eval_file, sess, data_type, iterator_manager):
     answer_dict = {}
